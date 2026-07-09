@@ -1,0 +1,179 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import random
+import string
+import asyncio
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+DB_KEYS = {} 
+DB_SALDO = {} 
+
+def gerar_key_furia(salas):
+    caracteres = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    key = f"FURIA-{salas}S-{caracteres}"
+    DB_KEYS[key] = salas 
+    return key
+
+@bot.event
+async def on_ready():
+    print(f"✅ FÚRIA SYSTEM online como {bot.user.name}!")
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔄 {len(synced)} comandos de barra sincronizados!")
+    except Exception as e:
+        print(f"Erro ao sincronizar comandos: {e}")
+
+class MenuLojaSalas(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="10 SALAS", description="Preço: R$ 0,59 | Estoque: 41", value="10", emoji="📦"),
+            discord.SelectOption(label="30 SALAS", description="Preço: R$ 1,50 | Estoque: 2", value="30", emoji="📦"),
+            discord.SelectOption(label="50 SALAS", description="Preço: R$ 2,50 | Estoque: 32", value="50", emoji="📦"),
+            discord.SelectOption(label="100 SALAS", description="Preço: R$ 5,00 | Estoque: 2", value="100", emoji="📦"),
+            discord.SelectOption(label="300 SALAS", description="Preço: R$ 24,00 | Estoque: 0", value="300", emoji="📦")
+        ]
+        super().__init__(placeholder="➡️ Clique aqui para ver as opções", min_values=1, max_values=1, options=options, custom_id="menu_loja_salas")
+
+    async def callback(self, interaction: discord.Interaction):
+        salas_escolhidas = int(self.values[0])
+        guild = interaction.guild
+        user = interaction.user
+
+        await interaction.response.send_message("⏳ Criando seu carrinho de compras privadas... Aguarde!", ephemeral=True)
+
+        nova_key = gerar_key_furia(salas_escolhidas)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        }
+
+        canal_ticket = await guild.create_text_channel(name=f"🛒-compra-{user.name}", overwrites=overwrites)
+
+        embed_pagamento = discord.Embed(
+            title="🛒 CARRINHO ABERTO - FÚRIA SYSTEM",
+            description=f"Olá {user.mention}, seu carrinho para o pacote de **{salas_escolhidas} Salas** foi gerado!\n\n"
+                        f"💳 **Forma de Pagamento:** PIX\n\n"
+                        f"⚠️ **Importante:** Efetue o pagamento utilizando os dados Pix informados abaixo pela nossa equipe. "
+                        f"Assim que o pagamento for confirmado e compensado pela Staff, você receberá a sua **KEY exclusiva** aqui no canal para realizar o resgate!\n\n"
+                        f"Aguarde um instante enquanto nossa equipe entra em contato...",
+            color=0x0099ff
+        )
+        embed_pagamento.set_footer(text="FÚRIA SYSTEM | Aguardando Pagamento")
+
+        view_fechar = ViewFecharTicket()
+        await canal_ticket.send(content=f"{user.mention} 👋", embed=embed_pagamento, view=view_fechar)
+
+class ViewLoja(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(MenuLojaSalas())
+
+class ViewFecharTicket(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Fechar Atendimento", style=discord.ButtonStyle.red, emoji="🔒", custom_id="fechar_canal_btn")
+    async def fechar_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 Este canal será deletado em 5 segundos...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+class ModalResgatarKey(discord.ui.Modal, title="Resgatar Key - FÚRIA SYSTEM"):
+    txt_key = discord.ui.TextInput(label="Cole sua Key aqui:", placeholder="FURIA-XXS-XXXXX", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        key_digitada = self.txt_key.value.strip()
+        user_id = str(interaction.user.id)
+
+        if key_digitada in DB_KEYS:
+            salas_ganhas = DB_KEYS[key_digitada]
+            DB_SALDO[user_id] = DB_SALDO.get(user_id, 0) + salas_ganhas
+            del DB_KEYS[key_digitada]
+
+            await interaction.response.send_message(
+                f"✅ **Sucesso!** Você resgatou `{salas_ganhas} salas`.\n"
+                f"📊 Seu saldo atual é de: `{DB_SALDO[user_id]} salas`.", 
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("❌ **Erro!** Essa Key é inválida ou já foi resgatada.", ephemeral=True)
+
+class ViewPainelPrincipal(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Resgatar Key", style=discord.ButtonStyle.green, emoji="🔑", custom_id="btn_resgatar")
+    async def resgatar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModalResgatarKey())
+
+    @discord.ui.button(label="Criar Sala", style=discord.ButtonStyle.blurple, emoji="🏆", custom_id="btn_criar")
+    async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        saldo_atual = DB_SALDO.get(user_id, 0)
+        
+        if saldo_atual > 0:
+            DB_SALDO[user_id] -= 1
+            await interaction.response.send_message(f"🏆 **Sala criada com sucesso!** 1 saldo consumido. Saldo atual: `{DB_SALDO[user_id]}`.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ **Você não tem saldo de salas!** Compre pacotes para obter uma Key.", ephemeral=True)
+
+    @discord.ui.button(label="Meu Perfil", style=discord.ButtonStyle.gray, emoji="📇", custom_id="btn_perfil")
+    async def perfil(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        saldo_atual = DB_SALDO.get(user_id, 0)
+        await interaction.response.send_message(f"📇 **Seu Perfil — FÚRIA SYSTEM**\n👤 Usuário: {interaction.user.mention}\n📊 Saldo de Salas: `{saldo_atual}`", ephemeral=True)
+
+@bot.tree.command(name="painel", description="Envia o painel de controle principal das salas.")
+async def painel(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="⚡ FÚRIA SYSTEM",
+        description="🔑 **Resgatar Key**\nInsira sua key para adicionar saldo.\n\n🏆 **Criar Sala**\nCrie uma sala de Free Fire com seu saldo.\n\n📇 **Meu Perfil**\nVeja seu saldo e informações básicas.",
+        color=0x0099ff
+    )
+    embed.set_image(url="https://discordapp.com")
+    await interaction.response.send_message(embed=embed, view=ViewPainelPrincipal())
+
+@bot.tree.command(name="compre-aqui", description="Envia o painel de vendas de salas da Fúria Sistem.")
+async def compre_aqui(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="⚡ FÚRIA SYSTEM",
+        description="**SALA BOT 5C**\n\n⚡ *Entrega Automática!*\n\nKEYS PARA O BOT\nCRIE AQUI\nBOT DE FILA\nBOT DE ORG",
+        color=0x0099ff
+    )
+    embed.set_image(url="https://discordapp.com")
+    embed.set_footer(text="FÚRIA SYSTEM | Painel de Vendas")
+    await interaction.response.send_message(embed=embed, view=ViewLoja())
+
+@bot.tree.command(name="atendimento", description="Abre um canal de suporte privado com a Staff da Fúria Sistem.")
+async def atendimento(interaction: discord.Interaction):
+    guild = interaction.guild
+    user = interaction.user
+
+    await interaction.response.send_message("⏳ Criando seu ticket de suporte privado... Aguarde!", ephemeral=True)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    }
+
+    canal_suporte = await guild.create_text_channel(name=f"🎫-suporte-{user.name}", overwrites=overwrites)
+
+    embed_suporte = discord.Embed(
+        title="⚡ FÚRIA SYSTEM - SUPORTE TÉCNICO",
+        description=f"Olá {user.mention}, seu canal de atendimento individual foi aberto!\n\nFormule sua dúvida ou problema abaixo.\nNossa equipe responderá o mais rápido possível.",
+        color=0x0099ff
+    )
+    embed_suporte.set_footer(text="FÚRIA SYSTEM | Atendimento")
+
+    view_fechar = ViewFecharTicket()
+    await canal_suporte.send(content=f"{user.mention} 👋", embed=embed_suporte, view=view_fechar)
+
+import os
+bot.run(os.environ.get('DISCORD_TOKEN'))
